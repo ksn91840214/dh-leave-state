@@ -67,7 +67,8 @@ jobs:
             fi
             EXPIRY_DATE=$(date -u -d "${ACCRUAL_DATE} +1 year -1 day" +%Y-%m-%d)
             AVAILABLE=$((NEXT_IDX - USED))
-            MSG="[DH건설정보] 월차 발생 🎉%0A%0A${NEXT_IDX}개월차 만근 월차 1일 발생%0A발생일: ${ACCRUAL_DATE}%0A사용기한: ${EXPIRY_DATE}%0A사용 가능 잔여: ${AVAILABLE}일"
+            MSG=$(printf '[DH건설정보] 월차 발생 🎉\n\n%s개월차 만근 월차 1일 발생\n발생일: %s\n사용기한: %s\n사용 가능 잔여: %s일' \
+              "$NEXT_IDX" "$ACCRUAL_DATE" "$EXPIRY_DATE" "$AVAILABLE")
             if send_msg "$MSG"; then
               LAST_IDX=$NEXT_IDX
               CHANGED=1
@@ -93,7 +94,9 @@ jobs:
             else
               body="수습 종료(${PROBATION_END})까지 ${label#D-}일 남았습니다."
             fi
-            if send_msg "[DH건설정보] 수습 종료 ${label}%0A%0A${body}"; then
+            local msg
+            msg=$(printf '[DH건설정보] 수습 종료 %s\n\n%s' "$label" "$body")
+            if send_msg "$msg"; then
               PROBATION_NOTIFIED="${PROBATION_NOTIFIED:+${PROBATION_NOTIFIED},}${label}"
               CHANGED=1
             fi
@@ -125,7 +128,7 @@ jobs:
                   if [ "$AVAILABLE" -gt 0 ]; then
                     USED=$((USED + 1))
                     NEW_AVAIL=$((LAST_IDX - USED))
-                    send_msg "[DH건설정보] 월차 1일 사용 처리 완료%0A남은 월차: ${NEW_AVAIL}일"
+                    send_msg "$(printf '[DH건설정보] 월차 1일 사용 처리 완료\n남은 월차: %s일' "$NEW_AVAIL")"
                   else
                     send_msg "[DH건설정보] 사용 가능한 월차가 없습니다."
                   fi
