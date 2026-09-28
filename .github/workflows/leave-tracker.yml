@@ -19,6 +19,12 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           set -e
+
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::error::TELEGRAM_BOT_TOKEN secret is empty or not set. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
           STATE_FILE="state.json"
           if [ ! -f "$STATE_FILE" ]; then
             echo '{"hire_date":"2026-07-15","chat_id":6110934837,"last_notified_month_index":1,"used":0,"last_update_id":275110740,"probation_notified":[]}' > "$STATE_FILE"
@@ -33,11 +39,23 @@ jobs:
 
           TODAY=$(date -u +%Y-%m-%d)
           CHANGED=0
+          SEND_FAILED=0
 
           send_msg() {
-            curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            local resp body code ok
+            resp=$(curl -s -w '\n%{http_code}' "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${CHAT_ID}" \
-              --data-urlencode "text=$1" > /dev/null
+              --data-urlencode "text=$1")
+            code=$(echo "$resp" | tail -n1)
+            body=$(echo "$resp" | sed '$d')
+            ok=$(echo "$body" | jq -r '.ok // false' 2>/dev/null)
+            if [ "$ok" != "true" ]; then
+              echo "::error::Telegram sendMessage failed (HTTP $code): $body"
+              SEND_FAILED=1
+              return 1
+            fi
+            echo "sent ok: $1"
+            return 0
           }
 
           # 1) 만근 월차 발생 체크 (입사일 기준 매월 15일, 1~11개월차)
@@ -48,11 +66,14 @@ jobs:
               break
             fi
             EXPIRY_DATE=$(date -u -d "${ACCRUAL_DATE} +1 year -1 day" +%Y-%m-%d)
-            LAST_IDX=$NEXT_IDX
-            AVAILABLE=$((LAST_IDX - USED))
+            AVAILABLE=$((NEXT_IDX - USED))
             MSG="[DH건설정보] 월차 발생 🎉%0A%0A${NEXT_IDX}개월차 만근 월차 1일 발생%0A발생일: ${ACCRUAL_DATE}%0A사용기한: ${EXPIRY_DATE}%0A사용 가능 잔여: ${AVAILABLE}일"
-            send_msg "$MSG"
-            CHANGED=1
+            if send_msg "$MSG"; then
+              LAST_IDX=$NEXT_IDX
+              CHANGED=1
+            else
+              break
+            fi
           done
 
           # 2) 수습 종료 디데이 카운트다운 (2026-10-17 종료 기준: D-90~D-10은 10일 단위, 이후 D-7/D-3/D-1/D-Day)
@@ -72,9 +93,10 @@ jobs:
             else
               body="수습 종료(${PROBATION_END})까지 ${label#D-}일 남았습니다."
             fi
-            send_msg "[DH건설정보] 수습 종료 ${label}%0A%0A${body}"
-            PROBATION_NOTIFIED="${PROBATION_NOTIFIED:+${PROBATION_NOTIFIED},}${label}"
-            CHANGED=1
+            if send_msg "[DH건설정보] 수습 종료 ${label}%0A%0A${body}"; then
+              PROBATION_NOTIFIED="${PROBATION_NOTIFIED:+${PROBATION_NOTIFIED},}${label}"
+              CHANGED=1
+            fi
           }
 
           for N in 90 80 70 60 50 40 30 20 10; do
@@ -89,9 +111,9 @@ jobs:
           # 3) 월차 사용 신고 체크 (텔레그램으로 받은 새 메시지 처리)
           OFFSET=$((LAST_UPDATE_ID + 1))
           UPDATES=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates" --data-urlencode "offset=${OFFSET}")
-          COUNT=$(echo "$UPDATES" | jq '.result | length')
+          COUNT=$(echo "$UPDATES" | jq '.result | length' 2>/dev/null || echo 0)
 
-          if [ "$COUNT" -gt 0 ]; then
+          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             for i in $(seq 0 $((COUNT - 1))); do
               UPD_ID=$(echo "$UPDATES" | jq -r ".result[$i].update_id")
               MSG_CHAT_ID=$(echo "$UPDATES" | jq -r ".result[$i].message.chat.id // empty")
@@ -128,8 +150,13 @@ jobs:
 
           echo "CHANGED=$CHANGED" >> "$GITHUB_ENV"
 
+          if [ "$SEND_FAILED" == "1" ]; then
+            echo "::error::One or more Telegram messages failed to send. Check TELEGRAM_BOT_TOKEN secret."
+            exit 1
+          fi
+
       - name: Commit state
-        if: env.CHANGED == '1'
+        if: always() && env.CHANGED == '1'
         run: |
           git config user.name "leave-tracker-bot"
           git config user.email "actions@users.noreply.github.com"
